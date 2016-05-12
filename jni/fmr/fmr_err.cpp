@@ -21,7 +21,7 @@
 #endif
 #define LOG_TAG "FMLIB_ERR"
 
-#define FMR_ERR_BASE -0x100
+#define FMR_ERR_BASE (-0x100)
 
 static int fmr_err = 0;
 static char tmp[20] = {0};
