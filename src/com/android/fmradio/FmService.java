@@ -56,6 +56,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
+import android.os.Process;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -247,7 +248,14 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
             String command = intent.getStringExtra("command");
             Log.d(TAG, "onReceive, action = " + action + " / command = " + command);
             // other app want FM stop, stop FM
-            if ((SOUND_POWER_DOWN_MSG.equals(action) && CMDPAUSE.equals(command))) {
+
+            if (CMDPAUSE.equals(command)) {
+                // need remove all messages, make power down will be execute
+                mFmServiceHandler.removeCallbacksAndMessages(null);
+                Log.d(TAG, "Stopping FM playback");
+                powerDownAsync();
+            } else if (SOUND_POWER_DOWN_MSG.equals(action)) {
+                // phone shut down, so exit FM
                 // need remove all messages, make power down will be execute
                 mFmServiceHandler.removeCallbacksAndMessages(null);
                 exitFm();
@@ -270,12 +278,12 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
             } else if (Intent.ACTION_HEADSET_PLUG.equals(action)) {
                 // switch antenna should not impact audio focus status
                 mValueHeadSetPlug = (intent.getIntExtra("state", -1) == HEADSET_PLUG_IN) ? 0 : 1;
-                switchAntennaAsync(mValueHeadSetPlug);
 
                 // Avoid Service is killed,and receive headset plug in
                 // broadcast again
                 if (!mIsServiceInited) {
                     Log.d(TAG, "onReceive, mIsServiceInited is false");
+                    switchAntennaAsync(mValueHeadSetPlug);
                     return;
                 }
                 /*
@@ -305,6 +313,8 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
                     bundle.putBoolean(FmListener.KEY_IS_SPEAKER_MODE, false);
                     notifyActivityStateChanged(bundle);
                 }
+
+                switchAntennaAsync(mValueHeadSetPlug);
             }
         }
     }
@@ -386,6 +396,8 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
     private synchronized void startRender() {
         Log.d(TAG, "startRender " + AudioSystem.getForceUse(FOR_PROPRIETARY));
 
+        exitRenderThread();
+
        // need to create new audio record and audio play back track,
        // because input/output device may be changed.
        if (mAudioRecord != null) {
@@ -401,6 +413,7 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
        initAudioRecordSink();
 
         mIsRender = true;
+        createRenderThread();
         synchronized (mRenderLock) {
             mRenderLock.notify();
         }
@@ -409,6 +422,9 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
     private synchronized void stopRender() {
         Log.d(TAG, "stopRender");
         mIsRender = false;
+        // HACK: Set volume to 0 to squelch any output between the call to
+        // stopRender and the render thread calling AudioTrack.stop
+        mAudioTrack.setVolume(0.0f);
     }
 
     private synchronized void createRenderThread() {
@@ -419,8 +435,12 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
     }
 
     private synchronized void exitRenderThread() {
-        stopRender();
         mRenderThread.interrupt();
+        try {
+            mRenderThread.join();
+        } catch (InterruptedException ie) {
+            Log.e(TAG, "Failed to join render thread");
+        }
         mRenderThread = null;
     }
 
@@ -463,6 +483,7 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
 
         @Override
         public void run() {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
             try {
                 byte[] buffer = new byte[RECORD_BUF_SIZE];
                 while (!Thread.interrupted()) {
@@ -496,11 +517,17 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
                         if (isRender()) {
                             mAudioTrack.write(tmpBuf, 0, tmpBuf.length);
                         }
+
+                        if (mFmRecorder != null) {
+                            mFmRecorder.encode(tmpBuf);
+                        }
                     } else {
                         // Earphone mode will come here and wait.
                         mCurrentFrame = 0;
 
                         if (mAudioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+                            mAudioTrack.pause();
+                            mAudioTrack.flush();
                             mAudioTrack.stop();
                         }
 
@@ -670,6 +697,10 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
     private boolean powerDown() {
         if (mPowerStatus == POWER_DOWN) {
             return true;
+        }
+
+        if (mFmRecorder != null) {
+            stopRecording();
         }
 
         setMute(true);
@@ -1094,12 +1125,17 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
         }
 
         if (mFmRecorder == null) {
-            mFmRecorder = new FmRecorder();
+            mFmRecorder = new FmRecorder(mAudioRecord.getFormat());
             mFmRecorder.registerRecorderStateListener(FmService.this);
         }
 
         if (isSdcardReady(sRecordingSdcard)) {
             mFmRecorder.startRecording(mContext);
+            if (mAudioPatch != null) {
+                Log.d(TAG, "Switching to SW rendering on recording start");
+                releaseAudioPatch();
+                startRender();
+            }
         } else {
             onRecorderError(FmRecorder.ERROR_SDCARD_NOT_PRESENT);
         }
@@ -1221,7 +1257,7 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
         if (null != mFmRecorder) {
             return mFmRecorder.getState();
         }
-        return FmRecorder.STATE_INVALID;
+        return FmRecorder.STATE_IDLE;
     }
 
     /**
@@ -1361,7 +1397,6 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
                 // Need to recreate AudioRecord and AudioTrack for this case.
                 if (isPatchMixerToDeviceRemoved(patches)) {
                     Log.d(TAG, "onAudioPatchListUpdate reinit for BT or WFD connected");
-                    initAudioRecordSink();
                     startRender();
                     return;
                 }
@@ -1439,6 +1474,7 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
         if (null != mFmRecorder) {
             mFmRecorder = null;
         }
+        stopRender();
         exitRenderThread();
         releaseAudioPatch();
         unregisterAudioPortUpdateListener();
@@ -1652,25 +1688,31 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
             }
 
             startAudioTrack();
-            ArrayList<AudioPatch> patches = new ArrayList<AudioPatch>();
-            mAudioManager.listAudioPatches(patches);
-            if (mAudioPatch == null) {
-                if (isPatchMixerToEarphone(patches)) {
-                    int status;
-                    stopAudioTrack();
-                    stopRender();
-                    status = createAudioPatch();
-                    if (status != AudioManager.SUCCESS){
-                       Log.d(TAG, "enableFmAudio: fallback as createAudioPatch failed");
-                       startRender();
-                    }
-                } else {
-                    startRender();
-                }
-            }
+            startPatchOrRender();
         } else {
             releaseAudioPatch();
             stopRender();
+        }
+    }
+
+    private void startPatchOrRender() {
+        ArrayList<AudioPatch> patches = new ArrayList<AudioPatch>();
+        mAudioManager.listAudioPatches(patches);
+        if (mAudioPatch == null) {
+            if (isPatchMixerToEarphone(patches)) {
+                int status;
+                stopAudioTrack();
+                stopRender();
+                status = createAudioPatch();
+                if (status != AudioManager.SUCCESS){
+                   Log.d(TAG, "startPatchOrRender: fallback as createAudioPatch failed");
+                   startRender();
+                }
+            } else {
+                if (!isRendering()) {
+                    startRender();
+                }
+            }
         }
     }
 
@@ -1678,25 +1720,37 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
     private boolean isPatchMixerToEarphone(ArrayList<AudioPatch> patches) {
         int deviceCount = 0;
         int deviceEarphoneCount = 0;
-        for (AudioPatch patch : patches) {
-            AudioPortConfig[] sources = patch.sources();
-            AudioPortConfig[] sinks = patch.sinks();
-            AudioPortConfig sourceConfig = sources[0];
-            AudioPortConfig sinkConfig = sinks[0];
-            AudioPort sourcePort = sourceConfig.port();
-            AudioPort sinkPort = sinkConfig.port();
-            Log.d(TAG, "isPatchMixerToEarphone " + sourcePort + " ====> " + sinkPort);
-            if (sourcePort instanceof AudioMixPort && sinkPort instanceof AudioDevicePort) {
-                deviceCount++;
-                int type = ((AudioDevicePort) sinkPort).type();
-                if (type == AudioSystem.DEVICE_OUT_WIRED_HEADSET ||
-                        type == AudioSystem.DEVICE_OUT_WIRED_HEADPHONE) {
-                    deviceEarphoneCount++;
+
+        if (getRecorderState() == FmRecorder.STATE_RECORDING) {
+            // force software rendering when recording
+            return false;
+        }
+
+        if (mContext.getResources().getBoolean(R.bool.config_useSoftwareRenderingForAudio)) {
+            Log.w(TAG, "FIXME: forcing isPatchMixerToEarphone to return false. "
+                    + "Software rendering will be used.");
+            return false;
+        } else {
+            for (AudioPatch patch : patches) {
+                AudioPortConfig[] sources = patch.sources();
+                AudioPortConfig[] sinks = patch.sinks();
+                AudioPortConfig sourceConfig = sources[0];
+                AudioPortConfig sinkConfig = sinks[0];
+                AudioPort sourcePort = sourceConfig.port();
+                AudioPort sinkPort = sinkConfig.port();
+                Log.d(TAG, "isPatchMixerToEarphone " + sourcePort + " ====> " + sinkPort);
+                if (sourcePort instanceof AudioMixPort && sinkPort instanceof AudioDevicePort) {
+                    deviceCount++;
+                    int type = ((AudioDevicePort) sinkPort).type();
+                    if (type == AudioSystem.DEVICE_OUT_WIRED_HEADSET ||
+                            type == AudioSystem.DEVICE_OUT_WIRED_HEADPHONE) {
+                        deviceEarphoneCount++;
+                    }
                 }
             }
-        }
-        if (deviceEarphoneCount == 1 && deviceCount == deviceEarphoneCount) {
-            return true;
+            if (deviceEarphoneCount == 1 && deviceCount == deviceEarphoneCount) {
+                return true;
+            }
         }
         return false;
     }
@@ -1727,7 +1781,6 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
     private void showPlayingNotification() {
         if (isActivityForeground() || mIsScanning
                 || (getRecorderState() == FmRecorder.STATE_RECORDING)) {
-            Log.w(TAG, "showPlayingNotification, do not show main notification.");
             return;
         }
         String stationName = "";
@@ -1875,6 +1928,15 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
         bundle.putInt(FmListener.CALLBACK_FLAG, FmListener.LISTEN_RECORDSTATE_CHANGED);
         bundle.putInt(FmListener.KEY_RECORDING_STATE, state);
         notifyActivityStateChanged(bundle);
+
+        if (state == FmRecorder.STATE_IDLE) { // stopped recording?
+            if (mPowerStatus == POWER_UP) { // playing?
+                if (mAudioPatch == null) {
+                    // maybe switch to patch if possible
+                    startPatchOrRender();
+                }
+            }
+        }
     }
 
     /**
@@ -2664,6 +2726,7 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         exitFm();
+        stopSelf();
         super.onTaskRemoved(rootIntent);
     }
 
