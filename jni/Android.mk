@@ -14,4 +14,6 @@
 
 LOCAL_PATH:= $(call my-dir)
 
+ifneq ($(BOARD_HAVE_ALTERNATE_FM),true)
 include $(call all-makefiles-under,$(LOCAL_PATH))
+endif

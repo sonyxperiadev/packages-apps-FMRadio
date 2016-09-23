@@ -33,6 +33,4 @@ LOCAL_SHARED_LIBRARIES := \
 
 LOCAL_MODULE := libfmjni
 
-ifneq ($(BOARD_HAVE_QCOM_FM),true)
 include $(BUILD_SHARED_LIBRARY)
-endif
