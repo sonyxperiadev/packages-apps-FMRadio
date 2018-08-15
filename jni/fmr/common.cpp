@@ -15,13 +15,12 @@
  */
 
 #include "fmr.h"
+#include "android-base/macros.h"
 
 #ifdef LOG_TAG
 #undef LOG_TAG
 #endif
 #define LOG_TAG "FMLIB_COM"
-
-static int g_stopscan = 0;
 
 int COM_open_dev(const char *pname, int *fd)
 {
@@ -101,7 +100,7 @@ void COM_change_string(uint8_t *str, int len)
     }
 }
 
-int COM_get_ps(int fd, RDSData_Struct *rds, uint8_t **ps, int *ps_len)
+int COM_get_ps(int fd ATTRIBUTE_UNUSED, RDSData_Struct *rds, uint8_t **ps, int *ps_len)
 {
     int ret = 0;
     char tmp_ps[9] = {0};
@@ -128,7 +127,7 @@ int COM_get_ps(int fd, RDSData_Struct *rds, uint8_t **ps, int *ps_len)
     return ret;
 }
 
-int COM_get_rt(int fd, RDSData_Struct *rds, uint8_t **rt, int *rt_len)
+int COM_get_rt(int fd ATTRIBUTE_UNUSED, RDSData_Struct *rds, uint8_t **rt, int *rt_len)
 {
     int ret = 0;
     char tmp_rt[65] = { 0 };
@@ -154,7 +153,7 @@ int COM_get_rt(int fd, RDSData_Struct *rds, uint8_t **rt, int *rt_len)
     return ret;
 }
 
-int COM_get_pi(int fd, RDSData_Struct *rds, uint16_t *pi)
+int COM_get_pi(int fd ATTRIBUTE_UNUSED, RDSData_Struct *rds, uint16_t *pi)
 {
     int ret = 0;
 
