@@ -18,7 +18,7 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE_TAGS := optional
 LOCAL_CERTIFICATE := platform
-
+LOCAL_PRIVATE_PLATFORM_APIS := true
 LOCAL_SRC_FILES := $(call all-java-files-under, src)
 
 LOCAL_PACKAGE_NAME := FMRadio
@@ -28,8 +28,12 @@ LOCAL_PROGUARD_ENABLED := disabled
 LOCAL_PRIVILEGED_MODULE := true
 
 LOCAL_STATIC_JAVA_LIBRARIES += android-support-v7-cardview
-LOCAL_RESOURCE_DIR = $(LOCAL_PATH)/res frameworks/support/v7/cardview/res
-
+LOCAL_RESOURCE_DIR = $(LOCAL_PATH)/res
+ifeq ($(call math_gt_or_eq, $(PLATFORM_SDK_VERSION), 28), true)
+	LOCAL_RESOURCE_DIR += frameworks/support/cardview/res
+else
+	LOCAL_RESOURCE_DIR += frameworks/support/v7/cardview/res
+endif
 LOCAL_AAPT_FLAGS := --auto-add-overlay --extra-packages android.support.v7.cardview
 
 include $(BUILD_PACKAGE)
